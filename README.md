@@ -20,7 +20,7 @@ It uses Telethon over MTProto, so it is not restricted by the smaller download l
 - Color tags, automatic `#hashtag` extraction, and combined filters
 - Custom albums with covers, descriptions, membership management, and filtering
 - Bulk tag, album, favorite, trash, restore, and permanent-delete actions
-- Image viewer with previous/next buttons and keyboard navigation
+- Responsive full-screen image viewer with buttons, keyboard navigation, and mobile swipe gestures
 - Authenticated Nginx `X-Accel-Redirect` delivery and HTTP Range video playback
 - Trash retention and automatic cleanup
 - systemd service isolation and automatic restart
