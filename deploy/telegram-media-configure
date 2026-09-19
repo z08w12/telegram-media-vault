@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+cd /opt/telegram-media/app
+exec /opt/telegram-media/venv/bin/python -m telegram_media.setup_cli

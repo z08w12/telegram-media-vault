@@ -1,0 +1,11 @@
+{
+  "name": "telegram-media-vault",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["apps/web"],
+  "scripts": {
+    "dev:web": "npm --workspace apps/web run dev",
+    "build": "npm --workspace apps/web run build"
+  },
+  "engines": { "node": ">=18" }
+}

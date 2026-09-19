@@ -1,0 +1,36 @@
+[Unit]
+Description=Telegram Media Vault
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=telegram-media
+Group=telegram-media
+WorkingDirectory=/opt/telegram-media/app
+EnvironmentFile=/etc/telegram-media.env
+ExecStart=/opt/telegram-media/venv/bin/uvicorn telegram_media.app:create_app --factory --host 127.0.0.1 --port 9292 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/telegram-media
+ReadWritePaths=/var/lib/telegram-media
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-media
+
+[Install]
+WantedBy=multi-user.target
+
