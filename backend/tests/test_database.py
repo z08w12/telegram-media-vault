@@ -35,6 +35,21 @@ def test_media_lifecycle(tmp_path: Path):
         db.close()
 
 
+def test_source_url_and_failed_download_retry(tmp_path: Path):
+    db = Database(tmp_path / "media.db")
+    try:
+        values = {**media_values(), "source_url": "https://x.com/i/status/1234567890"}
+        media_id, _, _ = db.begin_media(values)
+        assert db.get_media(media_id)["source_url"] == values["source_url"]
+        db.mark_failed(media_id, "temporary failure")
+        retried_id, status, duplicate = db.begin_media(values)
+        assert retried_id == media_id
+        assert status == "downloading"
+        assert not duplicate
+    finally:
+        db.close()
+
+
 def test_login_limits_and_sessions(tmp_path: Path):
     db = Database(tmp_path / "media.db")
     try:

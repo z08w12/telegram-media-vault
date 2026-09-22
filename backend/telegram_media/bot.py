@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import re
+import shutil
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +16,7 @@ from telethon.tl.types import DocumentAttributeFilename, DocumentAttributeVideo
 from .config import Settings
 from .database import Database
 from .storage import destination_for, enough_disk_space, finalize_download, resolve_inside
+from .x_downloader import XDownloadError, XPostReference, download_public_x_post, extract_x_status_url
 
 
 logger = logging.getLogger(__name__)
@@ -121,9 +125,13 @@ class TelegramWorker:
             logger.warning("Rejected Telegram user %s", sender_id)
             await event.respond("⛔ 你没有权限使用这个转存机器人。")
             return
+        x_reference = extract_x_status_url(getattr(event.message, "message", None))
+        if x_reference:
+            await self._handle_x_post(event, x_reference)
+            return
         item = describe_media(event.message)
         if not item:
-            await event.respond("请发送或转发图片、视频或文件。")
+            await event.respond("请发送或转发图片、视频、文件，或者公开 X 帖子链接。")
             return
         item["source_name"] = await _source_name(event.message)
         expected_size = int(item.get("size_bytes") or 0)
@@ -185,4 +193,103 @@ class TelegramWorker:
                 self.db.mark_failed(media_id, str(error))
                 logger.exception("Telegram download failed for media %s", media_id)
                 await status_message.edit(f"❌ 转存失败：{str(error)[:180]}")
+
+    async def _handle_x_post(self, event: Any, reference: XPostReference) -> None:
+        status_message = await event.respond("⏳ 已加入 X 视频转存队列…")
+        grouped_id = f"x:{reference.status_id}"
+        async with self.download_lock:
+            existing = self.db.ready_media_in_group(0, grouped_id)
+            if existing:
+                identifiers = "、".join(f"#{item['id']}" for item in existing)
+                await status_message.edit(f"✅ 这个 X 帖子已经转存过（媒体 {identifiers}）。")
+                return
+            if not enough_disk_space(self.settings, self.settings.max_file_bytes):
+                await status_message.edit("❌ VPS 可用空间不足，已保留安全空间，暂不下载。")
+                return
+
+            job_directory = resolve_inside(
+                self.settings.temp_dir,
+                f"x-{reference.status_id}-{uuid.uuid4().hex[:10]}",
+            )
+            current_media_id: int | None = None
+            current_destination: Path | None = None
+            try:
+                await status_message.edit("🔎 正在解析并下载公开 X 帖子视频…")
+                videos = await asyncio.to_thread(
+                    download_public_x_post,
+                    reference,
+                    job_directory,
+                    self.settings.max_file_bytes,
+                    self.settings.disk_reserve_bytes,
+                )
+                saved_ids: list[int] = []
+                message_tags = extract_hashtags(getattr(event.message, "message", None))
+                for video in videos:
+                    size = video.path.stat().st_size
+                    if not enough_disk_space(self.settings, size):
+                        raise XDownloadError("VPS 可用空间不足，已停止保存")
+                    suffix = video.path.suffix.lower() or ".mp4"
+                    title = re.sub(r"[\r\n\t]+", " ", (video.title or f"X-{reference.status_id}")).strip()[:180]
+                    uploader = (video.uploader_id or video.uploader or "").lstrip("@")
+                    item = {
+                        "kind": "video",
+                        "telegram_chat_id": 0,
+                        "telegram_message_id": int(reference.status_id),
+                        "telegram_file_id": f"x:{reference.status_id}:{video.media_id}",
+                        "grouped_id": grouped_id,
+                        "source_name": f"X · @{uploader}" if uploader else "X",
+                        "source_url": reference.url,
+                        "caption": video.description,
+                        "original_name": f"{title}{suffix}",
+                        "mime_type": mimetypes.guess_type(video.path.name)[0] or "video/mp4",
+                        "size_bytes": size,
+                        "width": None,
+                        "height": None,
+                        "duration_seconds": None,
+                    }
+                    current_media_id, duplicate_status, duplicate = self.db.begin_media(item)
+                    if duplicate:
+                        if duplicate_status == "ready":
+                            saved_ids.append(current_media_id)
+                        continue
+                    current_destination, relative_path, stored_name = destination_for(
+                        self.settings,
+                        current_media_id,
+                        "video",
+                        item["original_name"],
+                        item["mime_type"],
+                    )
+                    await finalize_download(
+                        self.settings,
+                        self.db,
+                        current_media_id,
+                        video.path,
+                        current_destination,
+                        relative_path,
+                        stored_name,
+                        "video",
+                    )
+                    tag_names = [*message_tags, *extract_hashtags(video.description)]
+                    self.db.add_tag_names(
+                        current_media_id,
+                        tag_names,
+                        telegram_chat_id=0,
+                        grouped_id=grouped_id,
+                    )
+                    saved_ids.append(current_media_id)
+                    current_media_id = None
+                    current_destination = None
+                if not saved_ids:
+                    raise XDownloadError("没有新增可保存的视频")
+                identifiers = "、".join(f"#{media_id}" for media_id in saved_ids)
+                await status_message.edit(f"✅ X 视频转存成功（媒体 {identifiers}）")
+            except Exception as error:
+                if current_media_id is not None:
+                    self.db.mark_failed(current_media_id, str(error))
+                if current_destination is not None:
+                    current_destination.unlink(missing_ok=True)
+                logger.exception("X download failed for status %s", reference.status_id)
+                await status_message.edit(f"❌ X 视频转存失败：{str(error)[:180]}")
+            finally:
+                shutil.rmtree(job_directory, ignore_errors=True)
 

@@ -10,6 +10,7 @@ It uses Telethon over MTProto, so it is not restricted by the smaller download l
 
 - Telegram user ID allowlist and private bot access
 - Photos, videos, animations, and document ingestion through MTProto
+- Public X/Twitter post video ingestion by sending a status link to the bot
 - Single-download queue, progress updates, duplicate detection, and failure cleanup
 - Configurable 2 GB file limit and reserved disk-space threshold
 - Atomic file writes and type/year/month storage layout
@@ -121,6 +122,10 @@ The script backs up the site configuration, validates it with `nginx -t`, and re
 - Tags in a Telegram media group are propagated to every item in that group.
 - Create albums from the web interface and assign one or many media items.
 - Enable bulk mode to select individual cards or the current page, then update tags, albums, favorites, or trash state.
+
+## Public X video links
+
+Send the bot a public `x.com/.../status/...` or `twitter.com/.../status/...` link. Native videos in the post are downloaded at the best available quality and added to the media library. Add hashtags to the Telegram message to tag every downloaded video. Private, login-only, deleted, and region-restricted posts are not supported. This feature does not transcode video; FFmpeg is used only when yt-dlp needs to merge existing audio and video streams without re-encoding.
 
 ## Security
 

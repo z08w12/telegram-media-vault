@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS media (
     telegram_file_id TEXT NOT NULL,
     grouped_id TEXT,
     source_name TEXT,
+    source_url TEXT,
     caption TEXT,
     original_name TEXT,
     stored_name TEXT,
@@ -91,6 +92,10 @@ class Database:
             self.connection.execute("PRAGMA foreign_keys=ON")
             self.connection.execute("PRAGMA busy_timeout=30000")
             self.connection.executescript(SCHEMA)
+            columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(media)")}
+            if "source_url" not in columns:
+                self.connection.execute("ALTER TABLE media ADD COLUMN source_url TEXT")
+                self.connection.commit()
 
     def close(self) -> None:
         with self.lock:
@@ -109,13 +114,13 @@ class Database:
                 cursor = self.connection.execute(
                     """INSERT INTO media (
                         kind,status,telegram_chat_id,telegram_message_id,telegram_file_id,grouped_id,
-                        source_name,caption,original_name,mime_type,size_bytes,width,height,duration_seconds,
+                        source_name,source_url,caption,original_name,mime_type,size_bytes,width,height,duration_seconds,
                         created_at,updated_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         values["kind"], "downloading", values["telegram_chat_id"], values["telegram_message_id"],
                         values["telegram_file_id"], values.get("grouped_id"), values.get("source_name"),
-                        values.get("caption"), values.get("original_name"), values.get("mime_type"),
+                        values.get("source_url"), values.get("caption"), values.get("original_name"), values.get("mime_type"),
                         values.get("size_bytes"), values.get("width"), values.get("height"),
                         values.get("duration_seconds"), now, now,
                     ),
@@ -128,7 +133,24 @@ class Database:
                     (values["telegram_chat_id"], values["telegram_message_id"], values["telegram_file_id"]),
                 ).fetchone()
                 assert row is not None
+                if row["status"] == "failed":
+                    self.connection.execute(
+                        "UPDATE media SET status='downloading',error_message=NULL,updated_at=? WHERE id=?",
+                        (now, row["id"]),
+                    )
+                    self.connection.commit()
+                    return int(row["id"]), "downloading", False
                 return int(row["id"]), str(row["status"]), True
+
+    def ready_media_in_group(self, telegram_chat_id: int, grouped_id: str) -> list[dict[str, Any]]:
+        with self.lock:
+            rows = self.connection.execute(
+                """SELECT id,status FROM media
+                   WHERE telegram_chat_id=? AND grouped_id=? AND status='ready'
+                   ORDER BY id""",
+                (telegram_chat_id, grouped_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def mark_ready(self, media_id: int, values: dict[str, Any]) -> None:
         self._execute(
