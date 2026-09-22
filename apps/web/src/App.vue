@@ -1,5 +1,7 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import ImageLightbox from './components/ImageLightbox.vue';
+import VideoPlayer from './components/VideoPlayer.vue';
 
 const authenticated = ref(false), password = ref(''), error = ref(''), loading = ref(false);
 const items = ref([]), tags = ref([]), albums = ref([]), total = ref(0), page = ref(1);
@@ -9,10 +11,9 @@ const selected = ref(null), selectedTagIds = ref([]), selectedAlbumIds = ref([])
 const newTagName = ref(''), newTagColor = ref('#55c6f5');
 const newAlbumName = ref(''), newAlbumDescription = ref('');
 const bulkMode = ref(false), checkedIds = ref([]), bulkTagIds = ref([]), bulkAlbumIds = ref([]);
-const imageFullscreen = ref(false), modalRef = ref(null);
+const lightboxOpen = ref(false);
 const API_BASE = '/telegram/api';
 let searchTimer;
-let touchStartX = null;
 let previousBodyOverflow = '';
 
 async function api(url, options = {}) {
@@ -105,48 +106,35 @@ function formatDate(value) { return new Intl.DateTimeFormat('zh-CN', { dateStyle
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / 30)));
 const imageItems = computed(() => items.value.filter((item) => item.kind === 'image'));
 const selectedImageIndex = computed(() => imageItems.value.findIndex((item) => item.id === selected.value?.id));
+const lightboxItems = computed(() => imageItems.value.map((item) => ({
+  src: `${API_BASE}/media/${item.id}/content`,
+  msrc: `${API_BASE}/media/${item.id}/thumbnail`,
+  width: Number(item.width) || 1600,
+  height: Number(item.height) || 1200,
+  alt: item.original_name || `媒体 #${item.id}`,
+})));
 function navigateImage(step) { if (selected.value?.kind !== 'image') return; const target = imageItems.value[selectedImageIndex.value + step]; if (target) openItem(target); }
-async function enterImageFullscreen() {
-  if (selected.value?.kind !== 'image') return;
-  imageFullscreen.value = true;
-  await nextTick();
-  if (modalRef.value?.requestFullscreen && !document.fullscreenElement) {
-    try { await modalRef.value.requestFullscreen({ navigationUI: 'hide' }); } catch { /* CSS viewport fallback for iOS and restricted browsers. */ }
-  }
-}
-async function exitImageFullscreen() {
-  imageFullscreen.value = false;
-  if (document.fullscreenElement) {
-    try { await document.exitFullscreen(); } catch { /* The CSS state is already restored. */ }
-  }
-}
-function toggleImageFullscreen() { if (imageFullscreen.value) exitImageFullscreen(); else enterImageFullscreen(); }
-function closeViewer() { if (imageFullscreen.value || document.fullscreenElement) exitImageFullscreen(); selected.value = null; }
-function fullscreenChanged() { if (!document.fullscreenElement && imageFullscreen.value) imageFullscreen.value = false; }
-function imageTouchStart(event) { if (event.touches.length === 1) touchStartX = event.touches[0].clientX; }
-function imageTouchEnd(event) {
-  if (touchStartX === null || event.changedTouches.length !== 1) { touchStartX = null; return; }
-  const distance = event.changedTouches[0].clientX - touchStartX;
-  touchStartX = null;
-  if (Math.abs(distance) >= 50) navigateImage(distance > 0 ? -1 : 1);
-}
+function openImageLightbox() { if (selected.value?.kind === 'image') lightboxOpen.value = true; }
+function selectLightboxImage(index) { const target = imageItems.value[index]; if (target && target.id !== selected.value?.id) openItem(target); }
+function closeViewer() { lightboxOpen.value = false; selected.value = null; }
 function keyboard(event) {
   const editing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target?.tagName) || event.target?.isContentEditable;
-  if (event.key === 'Escape') { if (imageFullscreen.value) exitImageFullscreen(); else if (selected.value) closeViewer(); tagManagerOpen.value = false; albumManagerOpen.value = false; return; }
+  if (lightboxOpen.value) return;
+  if (event.key === 'Escape') { if (selected.value) closeViewer(); tagManagerOpen.value = false; albumManagerOpen.value = false; return; }
   if (!selected.value || editing) return;
   if (event.key === 'ArrowLeft') navigateImage(-1);
   if (event.key === 'ArrowRight') navigateImage(1);
-  if (selected.value.kind === 'image' && event.key.toLowerCase() === 'f') toggleImageFullscreen();
+  if (selected.value.kind === 'image' && event.key.toLowerCase() === 'f') openImageLightbox();
 }
 watch([kind, favorite, trash, activeTag, activeAlbum], () => { page.value = 1; load(); });
 watch(query, () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { page.value = 1; load(); }, 300); });
 watch(page, load); watch(bulkMode, (enabled) => { if (!enabled) { checkedIds.value = []; bulkTagIds.value = []; bulkAlbumIds.value = []; } });
 watch(selected, (value, previousValue) => {
   if (value && !previousValue) { previousBodyOverflow = document.body.style.overflow; document.body.style.overflow = 'hidden'; }
-  else if (!value && previousValue) { document.body.style.overflow = previousBodyOverflow; if (imageFullscreen.value || document.fullscreenElement) exitImageFullscreen(); }
+  else if (!value && previousValue) document.body.style.overflow = previousBodyOverflow;
 });
-onMounted(async () => { window.addEventListener('keydown', keyboard); document.addEventListener('fullscreenchange', fullscreenChanged); try { await api(`${API_BASE}/auth/session`); authenticated.value = true; await refresh(); } catch { authenticated.value = false; } });
-onBeforeUnmount(() => { window.removeEventListener('keydown', keyboard); document.removeEventListener('fullscreenchange', fullscreenChanged); document.body.style.overflow = previousBodyOverflow; clearTimeout(searchTimer); });
+onMounted(async () => { window.addEventListener('keydown', keyboard); try { await api(`${API_BASE}/auth/session`); authenticated.value = true; await refresh(); } catch { authenticated.value = false; } });
+onBeforeUnmount(() => { window.removeEventListener('keydown', keyboard); document.body.style.overflow = previousBodyOverflow; clearTimeout(searchTimer); });
 </script>
 
 <template>
@@ -163,18 +151,19 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', keyboard); documen
     <section v-else class="empty"><span>{{ loading ? '正在加载…' : '这里还没有媒体' }}</span><p v-if="!loading && !trash">把图片或视频转发给 Telegram Bot，它会自动出现在这里。</p></section>
     <footer v-if="pageCount > 1" class="pager"><button :disabled="page <= 1" @click="page--">上一页</button><span>{{ page }} / {{ pageCount }}</span><button :disabled="page >= pageCount" @click="page++">下一页</button></footer>
   </div>
-  <div v-if="selected" ref="modalRef" :class="['modal', { 'image-fullscreen': imageFullscreen }]" @click.self="closeViewer">
+  <div v-if="selected" class="modal" @click.self="closeViewer">
     <button class="modal-close" aria-label="关闭预览" @click="closeViewer">×</button>
-    <button v-if="selected.kind === 'image'" class="fullscreen-toggle" :aria-label="imageFullscreen ? '退出全屏' : '全屏预览'" :title="imageFullscreen ? '退出全屏 (F)' : '全屏预览 (F)'" @click="toggleImageFullscreen">{{ imageFullscreen ? '退出全屏' : '⛶ 全屏' }}</button>
+    <button v-if="selected.kind === 'image'" class="fullscreen-toggle" aria-label="全屏浏览图片" title="全屏浏览 (F)" @click="openImageLightbox">⛶ 全屏浏览</button>
     <button v-if="selected.kind === 'image'" class="image-nav previous" :disabled="selectedImageIndex <= 0" aria-label="上一张" @click="navigateImage(-1)">‹</button>
     <button v-if="selected.kind === 'image'" class="image-nav next" :disabled="selectedImageIndex < 0 || selectedImageIndex >= imageItems.length - 1" aria-label="下一张" @click="navigateImage(1)">›</button>
-    <div class="viewer" @touchstart.passive="imageTouchStart" @touchend.passive="imageTouchEnd">
-      <img v-if="selected.kind === 'image'" :src="`${API_BASE}/media/${selected.id}/content`" :alt="selected.original_name || ''" />
-      <video v-else-if="selected.kind === 'video'" :src="`${API_BASE}/media/${selected.id}/content`" controls autoplay playsinline />
+    <div :class="['viewer', { 'video-viewer': selected.kind === 'video' }]">
+      <img v-if="selected.kind === 'image'" :src="`${API_BASE}/media/${selected.id}/content`" :alt="selected.original_name || ''" title="双击进入全屏浏览" @dblclick="openImageLightbox" />
+      <VideoPlayer v-else-if="selected.kind === 'video'" :key="selected.id" :src="`${API_BASE}/media/${selected.id}/content`" :poster="`${API_BASE}/media/${selected.id}/thumbnail`" :title="selected.original_name || ''" :media-id="selected.id" />
       <div v-else class="document-large">▤</div>
     </div>
     <aside class="details"><p class="eyebrow">{{ selected.kind }}</p><h2>{{ selected.original_name || `媒体 #${selected.id}` }}</h2><p v-if="selected.caption">{{ selected.caption }}</p><section class="media-tags"><h3>标签</h3><div class="tag-checks"><label v-for="tag in tags" :key="tag.id"><input v-model="selectedTagIds" type="checkbox" :value="tag.id" /><i :style="{ background: tag.color }"></i>{{ tag.name }}</label></div><button class="ghost" @click="saveMediaTags">保存标签</button></section><section class="media-tags"><h3>相册</h3><div class="tag-checks"><label v-for="album in albums" :key="album.id"><input v-model="selectedAlbumIds" type="checkbox" :value="album.id" />▣ {{ album.name }}</label></div><button class="ghost" @click="saveMediaAlbums">保存相册</button></section><dl><dt>大小</dt><dd>{{ formatBytes(selected.size_bytes) }}</dd><dt>转存时间</dt><dd>{{ formatDate(selected.created_at) }}</dd><dt v-if="selected.source_name">来源</dt><dd v-if="selected.source_name">{{ selected.source_name }}</dd><dt v-if="selected.source_url">原始链接</dt><dd v-if="selected.source_url"><a class="source-link" :href="selected.source_url" target="_blank" rel="noopener noreferrer">查看原帖 ↗</a></dd></dl><div class="actions"><a class="primary button" :href="`${API_BASE}/media/${selected.id}/download`">下载原文件</a><button v-if="!trash" class="ghost" @click="toggleFavorite(selected)">{{ selected.is_favorite ? '取消收藏' : '加入收藏' }}</button><button v-if="!trash" class="danger" @click="moveToTrash(selected)">移至回收站</button><button v-if="trash" class="ghost" @click="restore(selected)">恢复</button><button v-if="trash" class="danger" @click="removeForever(selected)">永久删除</button></div></aside>
   </div>
+  <ImageLightbox :open="lightboxOpen" :items="lightboxItems" :index="Math.max(0, selectedImageIndex)" @close="lightboxOpen = false" @change="selectLightboxImage" />
   <div v-if="tagManagerOpen" class="dialog-backdrop" @click.self="tagManagerOpen = false"><section class="tag-manager"><button class="dialog-close" @click="tagManagerOpen = false">×</button><p class="eyebrow">ORGANIZE</p><h2>管理标签</h2><form class="new-tag" @submit.prevent="createTag"><input v-model="newTagName" maxlength="32" placeholder="新标签名称" /><input v-model="newTagColor" type="color" aria-label="标签颜色" /><button class="primary">添加</button></form><div class="tag-list"><div v-for="tag in tags" :key="tag.id"><i :style="{ background: tag.color }"></i><strong>{{ tag.name }}</strong><small>{{ tag.mediaCount }} 项</small><input :value="tag.color" type="color" aria-label="修改颜色" @change="changeTagColor(tag, $event.target.value)" /><button @click="renameTag(tag)">重命名</button><button class="danger" @click="deleteTag(tag)">删除</button></div><p v-if="!tags.length" class="muted">还没有标签。</p></div><p class="hint">转发时在说明里加入 #标签，也会自动创建并关联标签。</p></section></div>
   <div v-if="albumManagerOpen" class="dialog-backdrop" @click.self="albumManagerOpen = false"><section class="tag-manager"><button class="dialog-close" @click="albumManagerOpen = false">×</button><p class="eyebrow">COLLECTIONS</p><h2>管理相册</h2><form class="new-album" @submit.prevent="createAlbum"><input v-model="newAlbumName" maxlength="64" placeholder="相册名称" /><input v-model="newAlbumDescription" maxlength="500" placeholder="相册说明（可选）" /><button class="primary">创建相册</button></form><div class="album-list"><div v-for="album in albums" :key="album.id"><div class="album-cover"><img v-if="album.coverMediaId" :src="`${API_BASE}/media/${album.coverMediaId}/thumbnail`" alt="" /><span v-else>▣</span></div><div><strong>{{ album.name }}</strong><p>{{ album.description || '暂无说明' }}</p></div><small>{{ album.mediaCount }} 项</small><button @click="editAlbum(album)">编辑</button><button class="danger" @click="deleteAlbum(album)">删除</button></div><p v-if="!albums.length" class="muted">还没有相册，可先创建后批量加入媒体。</p></div></section></div>
 </template>
